@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Voronoi Game: Human vs. Human or vs. Computer</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    .controls {
+      margin-bottom: 10px;
+    }
+    #gameCanvas {
+      border: 1px solid #000;
+      cursor: crosshair;
+    }
+    .scoreboard {
+      margin-top: 10px;
+    }
+    .scoreboard span {
+      display: inline-block;
+      width: 130px;
+    }
+    #turnIndicator {
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+    #modeSelector {
+      margin-left: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Voronoi Game</h1>
+  
+  <div id="turnIndicator">Turn 1: Red's turn</div>
+
+  <div class="controls">
+    <label for="pointsPerPlayer">Number of points per player: </label>
+    <input type="number" id="pointsPerPlayer" value="5" min="1" style="width: 60px;" />
+    <select id="modeSelector">
+      <option value="hvh">Human vs Human</option>
+      <option value="hvc">Human vs Computer</option>
+    </select>
+    <button onclick="newGame()">New Game</button>
+  </div>
+
+  <canvas id="gameCanvas" width="500" height="500"></canvas>
+
+  <div class="scoreboard">
+    <span>Red area: <span id="redArea">0</span></span>
+    <span>Blue area: <span id="blueArea">0</span></span>
+  </div>
+
+  <script>
+    // DOM references
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const redAreaSpan = document.getElementById("redArea");
+    const blueAreaSpan = document.getElementById("blueArea");
+    const pointsPerPlayerInput = document.getElementById("pointsPerPlayer");
+    const turnIndicator = document.getElementById("turnIndicator");
+    const modeSelector = document.getElementById("modeSelector");
+
+    // Global variables
+    let points = [];       // Array of { x, y, color }
+    let turn = 0;          // Turn counter: even = Red, odd = Blue
+    let totalTurns = 0;    // 2*n if n = number of points per player
+    let lastRedArea = 0;   // Store the most recent red area fraction
+    let lastBlueArea = 0;  // Store the most recent blue area fraction
+    let gameMode = "hvh";  // "hvh" or "hvc"
+
+    /**
+     * Setup a new game.
+     */
+    function newGame() {
+      points = [];
+      turn = 0;
+      const n = parseInt(pointsPerPlayerInput.value) || 5;
+      totalTurns = 2 * n;
+      gameMode = modeSelector.value; // "hvh" or "hvc"
+      clearCanvas();
+      updateAreas(0, 0);
+      updateTurnIndicator();
+      // If the game begins and it's a computer turn (unlikely with the default setup, 
+      // but let's be robust), handle that automatically.
+      maybePlayComputerTurn();
+    }
+
+    /**
+     * Clears the entire canvas to white.
+     */
+    function clearCanvas() {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    /**
+     * Mouse click handler: only relevant if it's a human turn.
+     */
+    canvas.addEventListener("click", (event) => {
+      // If game is done, ignore
+      if (turn >= totalTurns) return;
+
+      // If it's "Human vs Computer" but the current turn is computer's, ignore clicks
+      if (gameMode === "hvc" && (turn % 2 === 1)) {
+        return; 
+      }
+
+      // Place the point for the human
+      placePointFromClick(event);
+    });
+
+    /**
+     * Places a point in response to a user click, then attempts computer move if applicable.
+     */
+    function placePointFromClick(event) {
+      const rect = canvas.getBoundingClientRect();
+      const xPixel = event.clientX - rect.left;
+      const yPixel = event.clientY - rect.top;
+      const x = xPixel / canvas.width;
+      const y = yPixel / canvas.height;
+
+      // Current player color
+      const color = (turn % 2 === 0) ? "red" : "blue";
+
+      // Place the point
+      points.push({ x, y, color });
+      turn++;
+
+      // Draw Voronoi
+      drawVoronoi();
+      updateTurnIndicator();
+
+      // If in human vs. computer mode and the game isn't over, let the computer play
+      maybePlayComputerTurn();
+    }
+
+    /**
+     * If in "human vs computer" mode and it's the computer's turn, 
+     * place the computer's point using a greedy strategy.
+     */
+    function maybePlayComputerTurn() {
+      if (turn >= totalTurns) return; // Game is over
+      if (gameMode !== "hvc") return; // Not in human vs computer mode
+
+      // If it's Blue's turn (odd turn), we let the computer move
+      if (turn % 2 === 1) {
+        // We'll do a short delay to show the user that it's thinking 
+        // (otherwise it can feel too instant).
+        setTimeout(() => {
+          computerGreedyMove();
+        }, 200);
+      }
+    }
+
+    /**
+     * Computer tries to place a Blue point to maximize its area.
+     * We'll do a coarse sampling of the board to find the best location.
+     */
+    function computerGreedyMove() {
+      const bestLocation = findBestLocationForBlue();
+      // Place the point for Blue
+      points.push({ x: bestLocation.x, y: bestLocation.y, color: "blue" });
+      turn++;
+
+      // Draw Voronoi
+      drawVoronoi();
+      updateTurnIndicator();
+
+      // Maybe the next turn is again the computer's (if you ever invert roles or something),
+      // but with the normal setup, Red is always next. We'll just be consistent:
+      maybePlayComputerTurn();
+    }
+
+    /**
+     * Finds the location in [0,1] x [0,1] that maximizes Blue's area, 
+     * via a coarse sampling approach.
+     */
+    function findBestLocationForBlue() {
+      // We'll sample NxN grid points. Adjust N for better/worse speed.
+      const N = 20;
+      let bestX = 0.5;
+      let bestY = 0.5;
+      let bestBlueFraction = -1;
+
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const xTest = (i + 0.5) / N; 
+          const yTest = (j + 0.5) / N;
+          // Temporarily consider placing a point at (xTest, yTest)
+          const testPoints = [...points, { x: xTest, y: yTest, color: "blue" }];
+          const { redArea, blueArea } = approximateVoronoiCoverage(testPoints);
+          if (blueArea > bestBlueFraction) {
+            bestBlueFraction = blueArea;
+            bestX = xTest;
+            bestY = yTest;
+          }
+        }
+      }
+      return { x: bestX, y: bestY };
+    }
+
+    /**
+     * Approximates the fraction of area covered by Red or Blue for a given
+     * set of points.  To keep things fast, we sample a smaller resolution
+     * (e.g., 50x50 or 60x60), instead of the full 500x500.
+     */
+    function approximateVoronoiCoverage(testPoints) {
+      const sampleSize = 60; 
+      let redCount = 0;
+      let blueCount = 0;
+      const totalSamples = sampleSize * sampleSize;
+
+      for (let py = 0; py < sampleSize; py++) {
+        for (let px = 0; px < sampleSize; px++) {
+          const x = (px + 0.5) / sampleSize; 
+          const y = (py + 0.5) / sampleSize;
+
+          // Find closest point
+          let closestDist = Infinity;
+          let closestColor = null;
+          for (let pt of testPoints) {
+            const dx = x - pt.x;
+            const dy = y - pt.y;
+            const dist = dx*dx + dy*dy;
+            if (dist < closestDist) {
+              closestDist = dist;
+              closestColor = pt.color;
+            }
+          }
+          if (closestColor === "red") redCount++;
+          else blueCount++;
+        }
+      }
+
+      return {
+        redArea: redCount / totalSamples,
+        blueArea: blueCount / totalSamples
+      };
+    }
+
+    /**
+     * Draws the final Voronoi diagram at high resolution (the full canvas).
+     *  1) For each pixel, find closest point => color pixel.
+     *  2) Highlight boundaries in black.
+     *  3) Draw points as solid circles.
+     *  4) Update area counters.
+     */
+    function drawVoronoi() {
+      if (points.length === 0) {
+        clearCanvas();
+        updateAreas(0, 0);
+        return;
+      }
+
+      const width = canvas.width;
+      const height = canvas.height;
+
+      let redCount = 0;
+      let blueCount = 0;
+
+      // We'll keep track of which point index is closest
+      const closestIndexArray = new Int32Array(width * height);
+
+      // Image data for direct pixel manipulation
+      const imageData = ctx.createImageData(width, height);
+      const data = imageData.data;
+
+      // 1) Assign each pixel
+      for (let py = 0; py < height; py++) {
+        for (let px = 0; px < width; px++) {
+          const index = (py * width + px) * 4;
+
+          const x = px / width;
+          const y = py / height;
+
+          let closestDist = Infinity;
+          let closestColor = null;
+          let closestPtIndex = -1;
+
+          for (let i = 0; i < points.length; i++) {
+            const pt = points[i];
+            const dx = x - pt.x;
+            const dy = y - pt.y;
+            const dist = dx * dx + dy * dy;
+            if (dist < closestDist) {
+              closestDist = dist;
+              closestColor = pt.color;
+              closestPtIndex = i;
+            }
+          }
+
+          closestIndexArray[py * width + px] = closestPtIndex;
+          if (closestColor === "red") {
+            data[index + 0] = 255;
+            data[index + 1] = 200;
+            data[index + 2] = 200;
+            redCount++;
+          } else {
+            data[index + 0] = 200;
+            data[index + 1] = 200;
+            data[index + 2] = 255;
+            blueCount++;
+          }
+          data[index + 3] = 255;
+        }
+      }
+
+      // 2) Highlight cell boundaries in black (4-neighbor approach)
+      for (let py = 0; py < height; py++) {
+        for (let px = 0; px < width; px++) {
+          const idxThis = py * width + px;
+          const ptIndexThis = closestIndexArray[idxThis];
+          let boundary = false;
+
+          // Right neighbor
+          if (px < width - 1) {
+            const idxRight = py * width + (px + 1);
+            if (closestIndexArray[idxRight] !== ptIndexThis) boundary = true;
+          }
+          // Down neighbor
+          if (py < height - 1) {
+            const idxDown = (py + 1) * width + px;
+            if (closestIndexArray[idxDown] !== ptIndexThis) boundary = true;
+          }
+
+          if (boundary) {
+            const dataIndex = idxThis * 4;
+            data[dataIndex + 0] = 0;
+            data[dataIndex + 1] = 0;
+            data[dataIndex + 2] = 0;
+          }
+        }
+      }
+
+      // Put the image data onto the canvas
+      ctx.putImageData(imageData, 0, 0);
+
+      // 3) Draw each point on top
+      points.forEach((pt) => {
+        const cx = pt.x * width;
+        const cy = pt.y * height;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 5, 0, 2*Math.PI, false);
+        ctx.fillStyle = (pt.color === "red") ? "#FF0000" : "#0000FF";
+        ctx.fill();
+      });
+
+      // 4) Update area counters
+      const totalPixels = width * height;
+      const redArea = redCount / totalPixels;
+      const blueArea = blueCount / totalPixels;
+      updateAreas(redArea, blueArea);
+    }
+
+    /**
+     * Updates red/blue coverage in the UI and stores them globally.
+     */
+    function updateAreas(r, b) {
+      lastRedArea = r;
+      lastBlueArea = b;
+      redAreaSpan.textContent = r.toFixed(3);
+      blueAreaSpan.textContent = b.toFixed(3);
+    }
+
+    /**
+     * Updates the turn indicator.
+     * If the game is finished, we show the winner.
+     */
+    function updateTurnIndicator() {
+      if (turn >= totalTurns) {
+        // Game finished
+        let result;
+        if (lastRedArea > lastBlueArea) {
+          result = "Red wins!";
+        } else if (lastBlueArea > lastRedArea) {
+          result = "Blue wins!";
+        } else {
+          result = "It's a tie!";
+        }
+        turnIndicator.textContent = `Game finished! ${result}`;
+      } else {
+        // Ongoing game
+        const currentPlayer = (turn % 2 === 0) ? "Red" : "Blue";
+        const currentTurnNumber = turn + 1;
+        turnIndicator.textContent = `Turn ${currentTurnNumber}: ${currentPlayer}'s turn`;
+      }
+    }
+
+    // Initialize on page load
+    newGame();
+  </script>
+</body>
+</html>
